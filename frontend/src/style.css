@@ -1,0 +1,23 @@
+@tailwind components;
+@tailwind utilities;
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+}
+
+.msg-cell {
+  max-width: 440px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+pre.raw {
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
