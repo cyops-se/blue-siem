@@ -1,5 +1,7 @@
 # Blue SIEM
 
+[English](README.en.md) · **Svenska**
+
 En enkel SIEM som tar emot syslog, avkodar meddelanden med konfigurerbara regex-regler,
 sätter kritikalitet via mönstermatchning och skapar larm som måste kvitteras.
 
