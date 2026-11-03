@@ -250,12 +250,13 @@ func nonNil(rows []countRow) []countRow {
 }
 
 type settingsDTO struct {
-	AlarmThreshold int    `json:"alarm_threshold"`
-	RetentionDays  int    `json:"retention_days"`
-	LearningMode   bool   `json:"learning_mode"`
-	SyslogUDP      string `json:"syslog_udp"`
-	SyslogTCP      string `json:"syslog_tcp"`
-	Version        string `json:"version"`
+	AlarmThreshold int        `json:"alarm_threshold"`
+	RetentionDays  int        `json:"retention_days"`
+	LearningMode   bool       `json:"learning_mode"`
+	Forward        forwardDTO `json:"forward"`
+	SyslogUDP      string     `json:"syslog_udp"`
+	SyslogTCP      string     `json:"syslog_tcp"`
+	Version        string     `json:"version"`
 }
 
 func (s *Server) currentSettings() settingsDTO {
@@ -263,6 +264,7 @@ func (s *Server) currentSettings() settingsDTO {
 		AlarmThreshold: store.GetIntSetting(s.db, store.KeyAlarmThreshold),
 		RetentionDays:  store.GetIntSetting(s.db, store.KeyRetentionDays),
 		LearningMode:   store.GetBoolSetting(s.db, store.KeyLearningMode),
+		Forward:        s.currentForward(),
 		SyslogUDP:      s.info.SyslogUDP,
 		SyslogTCP:      s.info.SyslogTCP,
 		Version:        s.info.Version,
@@ -274,34 +276,49 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // putSettings updates the settings present in the body; omitted ones are
-// left unchanged.
+// left unchanged. Everything is validated before anything is stored.
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		AlarmThreshold *int  `json:"alarm_threshold"`
-		RetentionDays  *int  `json:"retention_days"`
-		LearningMode   *bool `json:"learning_mode"`
+		AlarmThreshold *int          `json:"alarm_threshold"`
+		RetentionDays  *int          `json:"retention_days"`
+		LearningMode   *bool         `json:"learning_mode"`
+		Forward        *forwardInput `json:"forward"`
 	}
 	if err := readJSON(r, &in); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	var errs []error
+	updates := map[string]string{}
 	if v := in.AlarmThreshold; v != nil {
 		if *v < 1 || *v > 10 {
 			writeError(w, http.StatusBadRequest, "alarm threshold must be 1–10")
 			return
 		}
-		errs = append(errs, store.SetSetting(s.db, store.KeyAlarmThreshold, strconv.Itoa(*v)))
+		updates[store.KeyAlarmThreshold] = strconv.Itoa(*v)
 	}
 	if v := in.RetentionDays; v != nil {
 		if *v < 0 {
 			writeError(w, http.StatusBadRequest, "retention days cannot be negative")
 			return
 		}
-		errs = append(errs, store.SetSetting(s.db, store.KeyRetentionDays, strconv.Itoa(*v)))
+		updates[store.KeyRetentionDays] = strconv.Itoa(*v)
 	}
 	if v := in.LearningMode; v != nil {
-		errs = append(errs, store.SetSetting(s.db, store.KeyLearningMode, strconv.FormatBool(*v)))
+		updates[store.KeyLearningMode] = strconv.FormatBool(*v)
+	}
+	if in.Forward != nil {
+		_, fwd, err := s.mergeForward(in.Forward)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		for k, v := range fwd {
+			updates[k] = v
+		}
+	}
+	var errs []error
+	for k, v := range updates {
+		errs = append(errs, store.SetSetting(s.db, k, v))
 	}
 	if err := errors.Join(errs...); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

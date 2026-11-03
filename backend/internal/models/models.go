@@ -5,6 +5,7 @@ import "time"
 const (
 	DecoderRegex    = "regex"
 	DecoderIPTables = "iptables"
+	DecoderBlueFwd  = "bluefwd"
 
 	ClassWhite = "WHITE"
 	ClassBlack = "BLACK"
@@ -31,6 +32,10 @@ type Event struct {
 	Criticality  int        `gorm:"index" json:"criticality"`
 	MatchedRules string     `json:"matched_rules"`
 	AlarmID      *uint      `json:"alarm_id"`
+
+	// Only used while decoding; decoders turn what they need into fields.
+	MsgID          string                       `gorm:"-" json:"-"`
+	StructuredData map[string]map[string]string `gorm:"-" json:"-"`
 }
 
 // Decoder extracts fields from a message. Type "regex" uses Pattern with

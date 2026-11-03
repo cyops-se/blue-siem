@@ -18,12 +18,31 @@ const (
 	KeyAlarmThreshold = "alarm_threshold"
 	KeyRetentionDays  = "retention_days"
 	KeyLearningMode   = "learning_mode"
+
+	KeyForwardEnabled  = "forward_enabled"
+	KeyForwardAddress  = "forward_address"
+	KeyForwardProtocol = "forward_protocol"
+	KeyForwardMinCrit  = "forward_min_crit"
+	KeyForwardSeverity = "forward_severity"
+	KeyForwardMode     = "forward_mode"
+	KeyForwardInstance = "forward_instance"
 )
 
 var defaultSettings = map[string]string{
 	KeyAlarmThreshold: "7",
 	KeyRetentionDays:  "30",
 	KeyLearningMode:   "false",
+
+	KeyForwardEnabled:  "false",
+	KeyForwardAddress:  "",
+	KeyForwardProtocol: "udp",
+	KeyForwardMinCrit:  "7",
+	// syslog "crit"
+	KeyForwardSeverity: "2",
+	// "original" relays the received message, "alarm" sends a new message
+	// with only the alarm type and the instance name.
+	KeyForwardMode:     "original",
+	KeyForwardInstance: "",
 }
 
 // Open opens (and migrates/seeds) the SQLite database at path.
@@ -138,19 +157,83 @@ func seed(db *gorm.DB) error {
 			return err
 		}
 	}
+	// Marks the decoder as seeded in new databases and adds it to older ones.
+	if err := addDecoderOnce(db, BlueFwdDecoder()); err != nil {
+		return err
+	}
 	db.Model(&models.SeverityRule{}).Count(&n)
 	if n == 0 {
 		if err := db.Create(DefaultRules()).Error; err != nil {
 			return err
 		}
 	}
+	// Same for rule sets added after the first release.
+	if err := addRulesOnce(db, "windows", WindowsRules()); err != nil {
+		return err
+	}
 	return nil
+}
+
+// addDecoderOnce adds a default decoder introduced after the database was
+// created. A marker setting makes sure a decoder the user deleted is not
+// added again.
+func addDecoderOnce(db *gorm.DB, d models.Decoder) error {
+	key := "seeded_decoder_" + d.Name
+	var s models.Setting
+	if err := db.First(&s, "key = ?", key).Error; err == nil {
+		return nil
+	}
+	var n int64
+	db.Model(&models.Decoder{}).Where("name = ?", d.Name).Count(&n)
+	if n == 0 {
+		if err := db.Create(&d).Error; err != nil {
+			return err
+		}
+	}
+	return SetSetting(db, key, "true")
+}
+
+// addRulesOnce adds a set of default rules to databases created before the
+// set existed, skipping rules whose name is already taken. Like
+// addDecoderOnce it only ever runs once per database.
+func addRulesOnce(db *gorm.DB, set string, rules []models.SeverityRule) error {
+	key := "seeded_rules_" + set
+	var s models.Setting
+	if err := db.First(&s, "key = ?", key).Error; err == nil {
+		return nil
+	}
+	for _, r := range rules {
+		var n int64
+		db.Model(&models.SeverityRule{}).Where("name = ?", r.Name).Count(&n)
+		if n > 0 {
+			continue
+		}
+		if err := db.Create(&r).Error; err != nil {
+			return err
+		}
+	}
+	return SetSetting(db, key, "true")
+}
+
+// BlueFwdDecoder decodes Windows events forwarded by blue-fwd. Its app name
+// is "blue-fwd" (RFC 5424) or "bluefwd" (the RFC 3164 tag drops the dash).
+func BlueFwdDecoder() models.Decoder {
+	return models.Decoder{
+		Name:        "blue-fwd",
+		Description: "Windows events from blue-fwd (Sysmon, Security, PowerShell …): structured data and JSON/XML payload as fields.",
+		Type:        models.DecoderBlueFwd,
+		Enabled:     true,
+		Priority:    5,
+		AppFilter:   `^blue-?fwd$`,
+		Tags:        models.StringList{"windows", "bluefwd"},
+	}
 }
 
 const ipPattern = `[0-9a-fA-F:.]+`
 
 func DefaultDecoders() []models.Decoder {
 	return []models.Decoder{
+		BlueFwdDecoder(),
 		{
 			Name:        "iptables",
 			Description: "Netfilter/iptables logs (IN= OUT= SRC= DST= ...). Classified as WHITE/BLACK/GREY by log prefix or IP lists.",
@@ -215,11 +298,41 @@ func cond(field, pattern string) models.Condition {
 	return models.Condition{Field: field, Pattern: pattern}
 }
 
-func DefaultRules() []models.SeverityRule {
-	r := func(prio int, name string, crit int, stop bool, c ...models.Condition) models.SeverityRule {
-		return models.SeverityRule{Name: name, Enabled: true, Priority: prio, Criticality: crit, Stop: stop, Conditions: c}
-	}
+func rule(prio int, name string, crit int, stop bool, c ...models.Condition) models.SeverityRule {
+	return models.SeverityRule{Name: name, Enabled: true, Priority: prio, Criticality: crit, Stop: stop, Conditions: c}
+}
+
+func negCond(field, pattern string) models.Condition {
+	return models.Condition{Field: field, Pattern: pattern, Negate: true}
+}
+
+// WindowsRules rate Windows events from the blue-fwd decoder.
+func WindowsRules() []models.SeverityRule {
+	r := rule
+	security := cond("tags", `^security$`)
+	sysmonNet := []models.Condition{cond("tags", `^sysmon$`), cond("event_id", `^3$`), cond("Initiated", `^true$`)}
 	return []models.SeverityRule{
+		r(60, "Windows: failed logon (4625)", 5, false, security, cond("event_id", `^4625$`)),
+		r(61, "Windows: account locked out (4740)", 7, false, security, cond("event_id", `^4740$`)),
+		r(62, "Windows: event log cleared (1102/104)", 8, false, cond("tags", `^windows$`),
+			cond("provider", `^Microsoft-Windows-Eventlog$`), cond("event_id", `^(1102|104)$`)),
+		r(63, "Windows: user account created (4720)", 7, false, security, cond("event_id", `^4720$`)),
+		r(64, "Windows: member added to security group (4728/4732/4756)", 7, false, security, cond("event_id", `^(4728|4732|4756)$`)),
+		r(65, "Windows: service installed (7045/4697)", 6, false, cond("tags", `^windows$`), cond("event_id", `^(7045|4697)$`)),
+		r(66, "Windows: scheduled task created (4698)", 6, false, security, cond("event_id", `^4698$`)),
+		// ip_list is set by the blue-fwd decoder when an address is on the
+		// blacklist.
+		r(70, "Windows: blacklisted address", 9, false, cond("tags", `^windows$`), cond("ip_list", `^BLACK$`)),
+		// Outgoing connections to ports outside the usual services. Below
+		// the alarm threshold by default: a hint to review, not an alarm.
+		r(71, "Sysmon: outgoing connection to unusual port", 4, false, append(sysmonNet,
+			negCond("dst_port", `^(20|21|22|25|53|80|88|123|135|137|138|139|389|443|445|465|587|636|993|995|3268|3269|3389|5985|5986|8080|8443)$`))...),
+	}
+}
+
+func DefaultRules() []models.SeverityRule {
+	r := rule
+	return append([]models.SeverityRule{
 		r(10, "Whitelisted traffic (WHITE)", 1, true, cond("tags", `^WHITE$`)),
 		r(20, "Blacklisted traffic (BLACK)", 9, false, cond("tags", `^BLACK$`)),
 		// GREY traffic is allowed through the firewall but logged and must be
@@ -233,5 +346,5 @@ func DefaultRules() []models.SeverityRule {
 		r(51, "sudo – incorrect password", 7, false, cond("decoder", `^sudo$`), cond("message", `(?i)incorrect password`)),
 		r(90, "Syslog emerg/alert/crit", 8, false, cond("syslog_severity", `^[0-2]$`)),
 		r(91, "Syslog error", 4, false, cond("syslog_severity", `^3$`)),
-	}
+	}, WindowsRules()...)
 }

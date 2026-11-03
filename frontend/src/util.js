@@ -47,13 +47,15 @@ const translatedFields = ['message', 'raw', 'tags', 'decoder', 'app_name', 'sour
 const fieldHints = {
   syslog_severity: '0–7', facility: '0–23', class: 'WHITE/GREY/BLACK', action: 'DROP/ACCEPT/…',
   direction: 'inbound/outbound/forward',
+  event_id: 'Windows (blue-fwd)', channel: 'Windows (blue-fwd)', ip_list: 'BLACK (blue-fwd)',
 }
 
 // ruleFields returns the field suggestions for rule conditions in the
 // current language.
 export function ruleFields() {
   return ['message', 'raw', 'tags', 'decoder', 'hostname', 'app_name', 'source_ip', 'syslog_severity', 'facility', 'class',
-    'action', 'src_ip', 'dst_ip', 'src_port', 'dst_port', 'proto', 'direction', 'in_iface', 'prefix', 'user'].map((value) => {
+    'action', 'src_ip', 'dst_ip', 'src_port', 'dst_port', 'proto', 'direction', 'in_iface', 'prefix', 'user',
+    'event_id', 'channel', 'ip_list'].map((value) => {
     const hint = translatedFields.includes(value) ? t('fields.' + value) : fieldHints[value]
     return { title: hint ? `${value} – ${hint}` : value, value }
   })
@@ -83,6 +85,14 @@ export const samples = [
   {
     get label() { return t('samples.sudoBad') },
     raw: '<85>Oct 29 10:18:00 web01 sudo:     erik : 3 incorrect password attempts ; TTY=pts/0 ; PWD=/home/erik ; USER=root ; COMMAND=/bin/bash',
+  },
+  {
+    label: 'blue-fwd Sysmon',
+    raw: '<134>1 2026-10-29T12:13:41.484071Z WS01 blue-fwd - 3 [win@32473 channel="Microsoft-Windows-Sysmon/Operational" provider="Microsoft-Windows-Sysmon" eventId="3" recordId="5512" subscription="Sysmon"] {"Computer":"WS01","Channel":"Microsoft-Windows-Sysmon/Operational","Provider":"Microsoft-Windows-Sysmon","EventID":3,"RecordID":5512,"Level":"Information","Keywords":"0x8000000000000000","EventData":{"Image":"C:\\\\Windows\\\\System32\\\\cmd.exe","User":"WS01\\\\erik","Protocol":"tcp","Initiated":"true","SourceIp":"10.0.0.5","SourcePort":"50123","DestinationIp":"203.0.113.9","DestinationPort":"4444"}}',
+  },
+  {
+    get label() { return t('samples.winLogonFailed') },
+    raw: '<133>1 2026-10-29T12:14:02.120000Z DC01 blue-fwd - 4625 [win@32473 channel="Security" provider="Microsoft-Windows-Security-Auditing" eventId="4625" recordId="991" subscription="Security logons"] {"Computer":"DC01","Channel":"Security","Provider":"Microsoft-Windows-Security-Auditing","EventID":4625,"RecordID":991,"Level":"Information","Keywords":"0x8010000000000000","EventData":{"TargetUserName":"administrator","LogonType":"3","IpAddress":"198.51.100.7","IpPort":"0"}}',
   },
   {
     label: 'RFC 5424 crit',

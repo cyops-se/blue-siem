@@ -69,6 +69,7 @@ func NewRouter(db *gorm.DB, eng *engine.Engine, info Info, web fs.FS) http.Handl
 
 		r.Get("/settings", s.getSettings)
 		r.Put("/settings", s.putSettings)
+		r.Post("/forward/test", s.testForward)
 
 		r.Post("/test", s.test)
 		r.Post("/ingest", s.ingest)

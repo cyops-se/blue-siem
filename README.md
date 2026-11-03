@@ -46,6 +46,15 @@ syslog (UDP/TCP) ─▶ parser (RFC3164/5424) ─▶ avkodare ─▶ kritikalite
    - `iptables`: inbyggd tolkning av netfilter LOG-rader. Fälten normaliseras till `src_ip`,
      `dst_ip`, `src_port`, `dst_port`, `proto`, `in_iface`, `out_iface` osv., plus `prefix`,
      `action` (DROP/ACCEPT/…), `direction`, `flags` och `class`.
+   - `bluefwd`: inbyggd tolkning av Windows-händelser från [blue-fwd](../blue-fwd) (appnamn `blue-fwd`,
+     eller `bluefwd` med RFC 3164). Structured data `[win@32473 …]` ger `channel`, `provider`, `event_id`,
+     `record_id` och `subscription`. JSON- eller XML-innehållet ger systemfälten (`computer`, `level`,
+     `keywords`, `user_sid` …) och alla `EventData`/`UserData`-värden under sina egna namn (t.ex. `Image`,
+     `TargetUserName`). Vanliga fält kopieras också till samma namn som andra avkodare använder: `src_ip`,
+     `dst_ip`, `src_port`, `dst_port`, `proto`, `user`, `image` och `command`. Taggar: `windows`, `bluefwd`,
+     kanalen (`sysmon`, `security`, `powershell`, `system`, `application`) och `audit_failure`/`audit_success`.
+     Meddelanden utan blue-fwd-data lämnas till nästa avkodare. Avkodaren läggs även till i befintliga
+     databaser, en gång.
 3. **Klassning av iptables-trafik** (taggen `WHITE`, `BLACK` eller `GREY`). WHITE är betrodd trafik
    som tillåts, BLACK är kända hot som blockeras och GREY är okänd trafik som **tillåts men loggas och
    larmar** för granskning. Klassen avgörs så här:
@@ -71,6 +80,19 @@ syslog (UDP/TCP) ─▶ parser (RFC3164/5424) ─▶ avkodare ─▶ kritikalite
    Övriga meddelanden (ssh, sudo …) behandlas som vanligt. Flöden rensas enligt lagringstiden.
 6. **Larm:** kritikalitet ≥ larmgränsen (standard 7) skapar ett larm som ligger kvar tills det
    kvitteras med namn och kommentar.
+7. **Vidarebefordran** (under *Inställningar*): händelser med kritikalitet ≥ en egen gräns (standard 7)
+   skickas till en annan syslog-server över UDP eller TCP (octet-counting). Två lägen:
+   - *Ursprungsmeddelandet:* den mottagna raden skickas oförändrad, men severity i PRI byts mot den
+     valda (standard 2, `crit`). Facility, tidsstämpel, värd och text behålls.
+   - *Bara larm:* ett nytt RFC 5424-meddelande som bara anger larmtyp (regeln som satte kritikaliteten),
+     kritikalitet, klass och instansens namn (standard datorns namn), t.ex.
+     `<34>1 2026-11-02T10:00:00Z siem01 blue-siem - alarm - Blue SIEM alarm: rule="Blacklisted traffic (BLACK)" criticality=9 class=BLACK`.
+     Inga källor, adresser, portar eller värdnamn följer med.
+
+   Sändningen sker i en egen kö, så en långsam eller nere mottagare påverkar inte mottagningen;
+   antal skickade, misslyckade och tappade meddelanden visas i inställningarna. Trafik som i
+   inlärningsläge bara räknas som flöden vidarebefordras inte. Instansens egen syslog-port på
+   den egna datorn nekas som mottagare, eftersom det skulle ge en loop.
 
 Exempel på brandväggsregler där GREY tillåts men loggas (bara nya anslutningar, så att inte varje
 paket blir ett larm):
@@ -88,6 +110,24 @@ Standardregler som skapas vid första start: BLACK → 9, GREY → 7 (larm), GRE
 WHITE → 1 (stopp), misslyckad SSH-inloggning → 5, okänd användare → 6, root-inloggning → 7,
 sudo med fel lösenord → 7, syslog emerg/alert/crit → 8.
 
+Regler för Windows-händelser från blue-fwd (läggs även till i befintliga databaser, en gång):
+
+| Händelse | Kritikalitet |
+|---|---|
+| Misslyckad inloggning (4625) | 5 |
+| Konto spärrat (4740) | 7 (larm) |
+| Händelselogg rensad (1102 Security, 104 System) | 8 (larm) |
+| Användarkonto skapat (4720) | 7 (larm) |
+| Medlem tillagd i säkerhetsgrupp (4728/4732/4756) | 7 (larm) |
+| Tjänst installerad (7045/4697) | 6 |
+| Schemalagd uppgift skapad (4698) | 6 |
+| Händelse med svartlistad adress (`ip_list` = BLACK) | 9 (larm) |
+| Sysmon: utgående anslutning till ovanlig port (3, `Initiated` = true) | 4 |
+
+Windows-händelser klassas inte som WHITE/GREY/BLACK, eftersom datorns egna utgående anslutningar
+annars alla skulle bli GREY och larma. I stället kontrollerar avkodaren `src_ip`/`dst_ip` mot
+svartlistan och sätter `ip_list=BLACK` (och `ip_list_match`) vid träff.
+
 ## REST-API
 
 | Metod | Sökväg | |
@@ -103,7 +143,8 @@ sudo med fel lösenord → 7, syslog emerg/alert/crit → 8.
 | POST | `/api/decoders/test` | Testa en osparad avkodare (`{decoder, raw}`) |
 | POST | `/api/test` | Analysera meddelanden utan att spara (`{raw, source_ip}`) |
 | POST | `/api/ingest` | Lagra meddelanden som om de kommit via syslog |
-| GET/PUT | `/api/settings` | Larmgräns, lagringstid och inlärningsläge (PUT ändrar bara angivna fält) |
+| GET/PUT | `/api/settings` | Larmgräns, lagringstid, inlärningsläge och vidarebefordran (`forward`); PUT ändrar bara angivna fält |
+| POST | `/api/forward/test` | Skicka ett testmeddelande till mottagaren (osparade värden i kroppen, tom = sparade) |
 | GET | `/api/stats?hours=24` | Statistik till översikten |
 | GET | `/api/stream` | SSE-ström (`event`, `alarm`, `ack`, `cleared`, `flow`, `flows_cleared`, `settings`) |
 

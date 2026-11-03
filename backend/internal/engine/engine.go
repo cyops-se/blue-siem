@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"blue-siem/internal/forward"
 	"blue-siem/internal/models"
 	"blue-siem/internal/store"
 	"blue-siem/internal/syslog"
@@ -46,8 +48,9 @@ type listNet struct {
 }
 
 type Engine struct {
-	db  *gorm.DB
-	Hub *Hub
+	db        *gorm.DB
+	Hub       *Hub
+	Forwarder *forward.Forwarder
 
 	mu        sync.RWMutex
 	decoders  []compiledDecoder
@@ -56,12 +59,23 @@ type Engine struct {
 	threshold int
 	retention int
 	learning  bool
+	fwd       forwardRule
 
 	queue   chan inbound
 	dropped atomic.Uint64
 }
 
 type inbound struct{ raw, remote string }
+
+// forwardRule decides which stored events are relayed, how and with which
+// syslog severity.
+type forwardRule struct {
+	enabled  bool
+	minCrit  int
+	severity int
+	mode     string
+	instance string
+}
 
 // Result is the outcome of analysing one message.
 type Result struct {
@@ -76,7 +90,7 @@ type Result struct {
 }
 
 func New(db *gorm.DB) *Engine {
-	return &Engine{db: db, Hub: NewHub(), queue: make(chan inbound, 10000)}
+	return &Engine{db: db, Hub: NewHub(), Forwarder: forward.New(), queue: make(chan inbound, 10000)}
 }
 
 // Reload recompiles decoders, rules, IP lists and settings from the database.
@@ -128,8 +142,40 @@ func (e *Engine) Reload() error {
 	e.threshold = store.GetIntSetting(e.db, store.KeyAlarmThreshold)
 	e.retention = store.GetIntSetting(e.db, store.KeyRetentionDays)
 	e.learning = store.GetBoolSetting(e.db, store.KeyLearningMode)
+	cfg := ForwardConfig(e.db)
+	e.fwd = forwardRule{
+		enabled:  cfg.Enabled,
+		minCrit:  store.GetIntSetting(e.db, store.KeyForwardMinCrit),
+		severity: store.GetIntSetting(e.db, store.KeyForwardSeverity),
+		mode:     store.GetSetting(e.db, store.KeyForwardMode),
+		instance: ForwardInstance(e.db),
+	}
 	e.mu.Unlock()
+	e.Forwarder.Configure(cfg)
 	return nil
+}
+
+// ForwardConfig reads the forwarding target from the settings. It is only
+// enabled when an address is set.
+func ForwardConfig(db *gorm.DB) forward.Config {
+	addr := store.GetSetting(db, store.KeyForwardAddress)
+	return forward.Config{
+		Enabled:  store.GetBoolSetting(db, store.KeyForwardEnabled) && addr != "",
+		Address:  addr,
+		Protocol: store.GetSetting(db, store.KeyForwardProtocol),
+	}
+}
+
+// ForwardInstance is the name alarm messages are sent under: the configured
+// one, otherwise the host name.
+func ForwardInstance(db *gorm.DB) string {
+	if name := store.GetSetting(db, store.KeyForwardInstance); name != "" {
+		return name
+	}
+	if host, err := os.Hostname(); err == nil && forward.ValidInstance(host) {
+		return host
+	}
+	return "blue-siem"
 }
 
 func CompileDecoder(d models.Decoder) (compiledDecoder, error) {
@@ -141,7 +187,7 @@ func CompileDecoder(d models.Decoder) (compiledDecoder, error) {
 		}
 	}
 	switch d.Type {
-	case models.DecoderIPTables:
+	case models.DecoderIPTables, models.DecoderBlueFwd:
 		if d.Pattern != "" {
 			if cd.re, err = regexp.Compile(d.Pattern); err != nil {
 				return cd, fmt.Errorf("pattern: %w", err)
@@ -227,8 +273,11 @@ func newEvent(raw, remote string) models.Event {
 		Message:    msg.Message,
 		Raw:        strings.TrimRight(raw, "\r\n\x00"),
 		Format:     msg.Format,
+		MsgID:      msg.MsgID,
 		Fields:     models.JSONMap{},
 		Tags:       models.StringList{},
+
+		StructuredData: msg.StructuredData,
 	}
 	if ev.Hostname == "" {
 		ev.Hostname = remote
@@ -269,6 +318,26 @@ func (e *Engine) applyDecoder(d compiledDecoder, ev *models.Event) bool {
 		if a := fields["action"]; a != "" {
 			ev.Tags.Add(a)
 		}
+	case models.DecoderBlueFwd:
+		if d.re != nil && !d.re.MatchString(ev.Message) {
+			return false
+		}
+		fields, tags, ok := ParseBlueFwd(ev.MsgID, ev.StructuredData, ev.Message)
+		if !ok {
+			return false
+		}
+		// Windows events are not WHITE/GREY/BLACK classified (outgoing
+		// connections from the host itself would all be GREY), but addresses
+		// on the blacklist are flagged for the rules.
+		if n := e.lookup(models.ClassBlack, net.ParseIP(fields["src_ip"]), net.ParseIP(fields["dst_ip"])); n != nil {
+			fields["ip_list"] = models.ClassBlack
+			fields["ip_list_match"] = n.net.String()
+		}
+		for k, v := range fields {
+			ev.Fields[k] = v
+		}
+		ev.Tags.Add(d.Tags...)
+		ev.Tags.Add(tags...)
 	case models.DecoderRegex:
 		m := d.re.FindStringSubmatch(ev.Message)
 		if m == nil {
@@ -436,12 +505,35 @@ func (e *Engine) Process(raw, remote string) (*models.Event, *models.Alarm, erro
 	if res.FlowOnly {
 		return nil, nil, nil
 	}
+	e.forward(&ev, res.TopRule)
 	e.Hub.Publish("event", ev)
 	if alarm != nil {
 		alarm.Event = &ev
 		e.Hub.Publish("alarm", alarm)
 	}
 	return &ev, alarm, nil
+}
+
+// forward relays an event that reaches the forwarding threshold: either the
+// original message with a raised syslog severity, or a new alarm message
+// without any details about the source.
+func (e *Engine) forward(ev *models.Event, topRule string) {
+	e.mu.RLock()
+	rule := e.fwd
+	e.mu.RUnlock()
+	if !rule.enabled || ev.Criticality < rule.minCrit {
+		return
+	}
+	if rule.mode == forward.ModeAlarm {
+		e.Forwarder.Send(forward.AlarmMessage(forward.Alarm{
+			Instance:    rule.instance,
+			Rule:        topRule,
+			Criticality: ev.Criticality,
+			Class:       ev.Fields["class"],
+		}, rule.severity, time.Now()))
+		return
+	}
+	e.Forwarder.Send(syslog.WithSeverity(ev.Raw, ev.Facility, rule.severity))
 }
 
 func flowOf(ev *models.Event) *models.Flow {
@@ -513,6 +605,7 @@ func (e *Engine) Dropped() uint64 { return e.dropped.Load() }
 // Run processes queued messages and applies retention until ctx is done.
 func (e *Engine) Run(ctx context.Context) {
 	go e.retentionLoop(ctx)
+	go e.Forwarder.Run(ctx)
 	for {
 		select {
 		case <-ctx.Done():

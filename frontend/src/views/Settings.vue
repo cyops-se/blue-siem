@@ -19,6 +19,62 @@
         </v-card-actions>
       </v-card>
 
+      <v-card variant="flat" border :title="t('forward.title')">
+        <v-card-text v-if="form.forward">
+          <div class="text-caption text-medium-emphasis mb-2">{{ t('forward.help') }}</div>
+          <v-switch v-model="form.forward.enabled" :label="t('forward.enabled')" color="success" inset hide-details class="mb-2" />
+          <div class="flex flex-wrap gap-x-4">
+            <v-text-field v-model="form.forward.address" :label="t('forward.address')" placeholder="siem2.example.com:514" class="mono flex-1 min-w-[220px]" />
+            <v-select v-model="form.forward.protocol" :items="['udp', 'tcp']" :label="t('forward.protocol')" class="w-32 flex-none" />
+          </div>
+          <div class="text-subtitle-2">{{ t('forward.minCrit') }}</div>
+          <div class="flex items-center gap-4 mb-4">
+            <v-slider v-model="form.forward.min_crit" :min="1" :max="10" :step="1" show-ticks="always" tick-size="3" :color="critInfo(form.forward.min_crit).color" hide-details class="flex-1" />
+            <CritChip :value="form.forward.min_crit" size="default" />
+          </div>
+          <v-select v-model="form.forward.severity" :items="severityItems" :label="t('forward.severity')" />
+          <div class="text-subtitle-2 mb-1">{{ t('forward.mode') }}</div>
+          <v-radio-group v-model="form.forward.mode" hide-details class="mb-2">
+            <v-radio value="original">
+              <template #label>
+                <div>
+                  <div>{{ t('forward.modeOriginal') }}</div>
+                  <div class="text-caption text-medium-emphasis">{{ t('forward.modeOriginalHelp') }}</div>
+                </div>
+              </template>
+            </v-radio>
+            <v-radio value="alarm">
+              <template #label>
+                <div>
+                  <div>{{ t('forward.modeAlarm') }}</div>
+                  <div class="text-caption text-medium-emphasis">{{ t('forward.modeAlarmHelp') }}</div>
+                </div>
+              </template>
+            </v-radio>
+          </v-radio-group>
+          <v-text-field
+            v-model="form.forward.instance"
+            :label="t('forward.instance')"
+            :placeholder="form.forward.instance_default"
+            :hint="t('forward.instanceHint', { name: form.forward.instance_default })"
+            persistent-hint
+            class="mono mb-2"
+          />
+          <div class="text-caption text-medium-emphasis mb-1">{{ t('forward.example') }}</div>
+          <pre class="raw mono mb-2 whitespace-pre-wrap break-all">{{ example }}</pre>
+          <div class="text-caption text-medium-emphasis">{{ t('forward.learningNote') }}</div>
+          <div class="text-caption mt-2">{{ t('forward.status', { sent: fmtNum(form.forward.status.sent), failed: fmtNum(form.forward.status.failed), dropped: fmtNum(form.forward.status.dropped) }) }}</div>
+          <div v-if="form.forward.status.last_error" class="text-caption text-error">
+            {{ t('forward.lastError', { time: fmtTime(form.forward.status.last_error_at), error: form.forward.status.last_error }) }}
+          </div>
+        </v-card-text>
+        <v-card-actions>
+          <v-btn variant="tonal" prepend-icon="mdi-send" :disabled="!form.forward?.address" :loading="testing" @click="testForward">{{ t('forward.test') }}</v-btn>
+          <v-spacer />
+          <v-btn color="primary" variant="flat" :loading="saving" @click="save">{{ t('common.save') }}</v-btn>
+        </v-card-actions>
+      </v-card>
+
       <v-card variant="flat" border :title="t('settings.interface')">
         <v-card-text>
           <v-btn-toggle :model-value="i18n.locale" mandatory density="comfortable" variant="outlined" divided @update:model-value="setLocale">
@@ -51,15 +107,47 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { live, notify } from '../live'
-import { critInfo } from '../util'
-import { i18n, locales, setLocale, t } from '../i18n'
+import { critInfo, fmtTime, syslogSeverities } from '../util'
+import { fmtNum, i18n, locales, setLocale, t } from '../i18n'
 import CritChip from '../components/CritChip.vue'
 
 const form = ref({ alarm_threshold: 7, retention_days: 30 })
 const saving = ref(false)
+const testing = ref(false)
+
+const severityItems = syslogSeverities.map((name, value) => ({ title: `${value} – ${name}`, value }))
+
+// Mirrors what the backend sends, for illustration only.
+const example = computed(() => {
+  const f = form.value.forward
+  if (!f) return ''
+  if (f.mode === 'alarm') {
+    const name = f.instance || f.instance_default
+    return `<${4 * 8 + f.severity}>1 2026-11-02T10:00:00Z ${name} blue-siem - alarm - Blue SIEM alarm: rule="Blacklisted traffic (BLACK)" criticality=9 class=BLACK`
+  }
+  return `<${f.severity}>Nov  2 10:00:00 fw01 kernel: BLACK DROP: IN=eth0 OUT= SRC=185.220.101.4 DST=192.168.1.10 PROTO=TCP SPT=51234 DPT=22`
+})
+
+// forwardBody is the editable part of the forwarding settings.
+function forwardBody() {
+  const { enabled, address, protocol, min_crit, severity, mode, instance } = form.value.forward
+  return { enabled, address, protocol, min_crit, severity, mode, instance }
+}
+
+async function testForward() {
+  testing.value = true
+  try {
+    await api.post('/forward/test', forwardBody())
+    notify(t('forward.testSent'), 'success')
+  } catch (e) {
+    notify(e.message, 'error')
+  } finally {
+    testing.value = false
+  }
+}
 
 const port = (addr) => {
   const p = (addr || '').split(':').pop()
@@ -69,7 +157,8 @@ const port = (addr) => {
 async function save() {
   saving.value = true
   try {
-    form.value = await api.put('/settings', form.value)
+    const { alarm_threshold, retention_days, learning_mode } = form.value
+    form.value = await api.put('/settings', { alarm_threshold, retention_days, learning_mode, forward: forwardBody() })
     live.learning = form.value.learning_mode
     notify(t('settings.saved'), 'success')
   } catch (e) {

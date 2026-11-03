@@ -23,8 +23,10 @@ type Message struct {
 	AppName   string
 	ProcID    string
 	MsgID     string
-	Message   string
-	Format    string
+	// StructuredData holds the RFC 5424 SD elements: SD-ID -> param -> value.
+	StructuredData map[string]map[string]string
+	Message        string
+	Format         string
 }
 
 var tagRe = regexp.MustCompile(`^([^\s\[\]:]+)(?:\[([^\]]*)\])?:\s?(.*)$`)
@@ -66,6 +68,17 @@ func parsePRI(s string) (int, string, bool) {
 	return pri, s[end+1:], true
 }
 
+// WithSeverity returns raw with its PRI set to the given facility and
+// severity, leaving the rest of the message untouched. A message without a
+// PRI gets one prepended.
+func WithSeverity(raw string, facility, severity int) string {
+	s := strings.TrimRight(raw, "\r\n\x00")
+	if _, rest, ok := parsePRI(s); ok {
+		s = rest
+	}
+	return "<" + strconv.Itoa(facility*8+severity) + ">" + s
+}
+
 func nilValue(s string) string {
 	if s == "-" {
 		return ""
@@ -93,34 +106,70 @@ func parse5424(s string, m *Message) bool {
 	if len(parts) == 6 {
 		rest = parts[5]
 	}
-	rest = skipStructuredData(rest)
+	m.StructuredData, rest = parseStructuredData(rest)
 	m.Message = strings.TrimPrefix(strings.TrimSpace(rest), string(rune(0xFEFF)))
 	return true
 }
 
-// skipStructuredData drops "-" or one or more [id k="v"] elements.
-func skipStructuredData(s string) string {
+// parseStructuredData reads "-" or one or more [id k="v" ...] elements and
+// returns them with the rest of the message. Malformed data is skipped up to
+// the end of the element rather than failing the whole message.
+func parseStructuredData(s string) (map[string]map[string]string, string) {
 	if strings.HasPrefix(s, "-") {
-		return s[1:]
+		return nil, s[1:]
 	}
+	var sd map[string]map[string]string
 	i := 0
 	for i < len(s) && s[i] == '[' {
-		inQuote := false
-		for i++; i < len(s); i++ {
-			c := s[i]
-			if c == '\\' && inQuote {
+		i++
+		start := i
+		for i < len(s) && s[i] != ' ' && s[i] != ']' {
+			i++
+		}
+		id := s[start:i]
+		params := map[string]string{}
+		for i < len(s) && s[i] != ']' {
+			for i < len(s) && s[i] == ' ' {
 				i++
-				continue
 			}
-			if c == '"' {
-				inQuote = !inQuote
-			} else if c == ']' && !inQuote {
+			start = i
+			for i < len(s) && s[i] != '=' && s[i] != ']' && s[i] != ' ' {
 				i++
+			}
+			name := s[start:i]
+			if i+1 >= len(s) || s[i] != '=' || s[i+1] != '"' {
+				// Not name="value": skip to the end of the element.
+				for i < len(s) && s[i] != ']' {
+					i++
+				}
 				break
 			}
+			i += 2
+			var val strings.Builder
+			for i < len(s) && s[i] != '"' {
+				if s[i] == '\\' && i+1 < len(s) && strings.IndexByte(`"\]`, s[i+1]) >= 0 {
+					i++
+				}
+				val.WriteByte(s[i])
+				i++
+			}
+			i++ // closing quote
+			if name != "" {
+				params[name] = val.String()
+			}
+		}
+		i++ // closing bracket
+		if id != "" {
+			if sd == nil {
+				sd = map[string]map[string]string{}
+			}
+			sd[id] = params
 		}
 	}
-	return s[i:]
+	if i > len(s) {
+		i = len(s)
+	}
+	return sd, s[i:]
 }
 
 var bsdLayouts = []string{"Jan _2 15:04:05", "Jan 02 15:04:05"}

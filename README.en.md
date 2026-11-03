@@ -46,6 +46,15 @@ syslog (UDP/TCP) ─▶ parser (RFC3164/5424) ─▶ decoders ─▶ severity ru
    - `iptables`: built-in parser for netfilter LOG lines. Fields are normalised to `src_ip`,
      `dst_ip`, `src_port`, `dst_port`, `proto`, `in_iface`, `out_iface` etc., plus `prefix`,
      `action` (DROP/ACCEPT/…), `direction`, `flags` and `class`.
+   - `bluefwd`: built-in parser for Windows events from [blue-fwd](../blue-fwd) (app name `blue-fwd`,
+     or `bluefwd` with RFC 3164). The structured data `[win@32473 …]` gives `channel`, `provider`,
+     `event_id`, `record_id` and `subscription`. The JSON or XML payload gives the system fields (`computer`,
+     `level`, `keywords`, `user_sid` …) and all `EventData`/`UserData` values under their own names (e.g.
+     `Image`, `TargetUserName`). Common fields are also copied to the names other decoders use: `src_ip`,
+     `dst_ip`, `src_port`, `dst_port`, `proto`, `user`, `image` and `command`. Tags: `windows`, `bluefwd`, the
+     channel (`sysmon`, `security`, `powershell`, `system`, `application`) and `audit_failure`/`audit_success`.
+     Messages without blue-fwd data are left to the next decoder. The decoder is also added to existing
+     databases, once.
 3. **Classification of iptables traffic** (the tag `WHITE`, `BLACK` or `GREY`). WHITE is trusted traffic
    that is allowed, BLACK is known threats that are blocked and GREY is unknown traffic that is
    **allowed but logged and raises alarms** for review. The class is decided as follows:
@@ -72,6 +81,19 @@ syslog (UDP/TCP) ─▶ parser (RFC3164/5424) ─▶ decoders ─▶ severity ru
    Other messages (ssh, sudo …) are handled as usual. Flows are removed according to the retention time.
 6. **Alarms:** criticality ≥ the alarm threshold (default 7) raises an alarm that remains until it is
    acknowledged with a name and a comment.
+7. **Forwarding** (under *Settings*): events with a criticality ≥ a separate threshold (default 7) are
+   sent to another syslog server over UDP or TCP (octet counting). Two modes:
+   - *Original message:* the received line is sent unchanged, except that the severity in its PRI is
+     replaced by the chosen one (default 2, `crit`). Facility, timestamp, host and text are kept.
+   - *Alarm only:* a new RFC 5424 message that only states the alarm type (the rule that set the
+     criticality), criticality, class and the instance name (default the computer's name), e.g.
+     `<34>1 2026-11-02T10:00:00Z siem01 blue-siem - alarm - Blue SIEM alarm: rule="Blacklisted traffic (BLACK)" criticality=9 class=BLACK`.
+     No sources, addresses, ports or host names are included.
+
+   Sending happens on its own queue, so a slow or unreachable receiver does not affect ingestion;
+   the number of sent, failed and dropped messages is shown in the settings. Traffic that is only
+   counted as flows in learning mode is not forwarded. The instance's own syslog port on the local
+   machine is refused as a receiver, since that would create a loop.
 
 Example firewall rules where GREY is allowed but logged (new connections only, so that not every
 packet becomes an alarm):
@@ -89,6 +111,24 @@ Default rules created on first start: BLACK → 9, GREY → 7 (alarm), GREY to s
 WHITE → 1 (stop), failed SSH login → 5, unknown user → 6, root login → 7,
 sudo with incorrect password → 7, syslog emerg/alert/crit → 8.
 
+Rules for Windows events from blue-fwd (also added to existing databases, once):
+
+| Event | Criticality |
+|---|---|
+| Failed logon (4625) | 5 |
+| Account locked out (4740) | 7 (alarm) |
+| Event log cleared (1102 Security, 104 System) | 8 (alarm) |
+| User account created (4720) | 7 (alarm) |
+| Member added to security group (4728/4732/4756) | 7 (alarm) |
+| Service installed (7045/4697) | 6 |
+| Scheduled task created (4698) | 6 |
+| Event with a blacklisted address (`ip_list` = BLACK) | 9 (alarm) |
+| Sysmon: outgoing connection to an unusual port (3, `Initiated` = true) | 4 |
+
+Windows events are not classified as WHITE/GREY/BLACK, since the computer's own outgoing connections
+would otherwise all be GREY and raise alarms. Instead the decoder checks `src_ip`/`dst_ip` against the
+blacklist and sets `ip_list=BLACK` (and `ip_list_match`) on a match.
+
 ## REST API
 
 | Method | Path | |
@@ -104,7 +144,8 @@ sudo with incorrect password → 7, syslog emerg/alert/crit → 8.
 | POST | `/api/decoders/test` | Test an unsaved decoder (`{decoder, raw}`) |
 | POST | `/api/test` | Analyse messages without storing them (`{raw, source_ip}`) |
 | POST | `/api/ingest` | Store messages as if they had arrived over syslog |
-| GET/PUT | `/api/settings` | Alarm threshold, retention and learning mode (PUT only changes the given fields) |
+| GET/PUT | `/api/settings` | Alarm threshold, retention, learning mode and forwarding (`forward`); PUT only changes the given fields |
+| POST | `/api/forward/test` | Send a test message to the receiver (unsaved values in the body, empty = saved) |
 | GET | `/api/stats?hours=24` | Statistics for the overview |
 | GET | `/api/stream` | SSE stream (`event`, `alarm`, `ack`, `cleared`, `flow`, `flows_cleared`, `settings`) |
 

@@ -83,3 +83,83 @@ func TestMigrateFlowKey(t *testing.T) {
 		t.Errorf("%d flows with NULL hostname", nulls)
 	}
 }
+
+func TestAddDecoderOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := func() int64 {
+		var n int64
+		db.Model(&models.Decoder{}).Where("name = ?", "blue-fwd").Count(&n)
+		return n
+	}
+	if count() != 1 {
+		t.Fatal("blue-fwd decoder not seeded")
+	}
+	// Simulate a database from before the decoder existed: it is added once.
+	db.Where("name = ?", "blue-fwd").Delete(&models.Decoder{})
+	db.Where("key = ?", "seeded_decoder_blue-fwd").Delete(&models.Setting{})
+	reopen := func() {
+		sqlDB, _ := db.DB()
+		sqlDB.Close()
+		if db, err = Open(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reopen()
+	if count() != 1 {
+		t.Fatal("blue-fwd decoder not added to an existing database")
+	}
+	// A decoder the user deleted stays deleted.
+	db.Where("name = ?", "blue-fwd").Delete(&models.Decoder{})
+	reopen()
+	defer func() { sqlDB, _ := db.DB(); sqlDB.Close() }()
+	if count() != 0 {
+		t.Error("deleted decoder was added again")
+	}
+}
+
+func TestAddRulesOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := func() int64 {
+		var n int64
+		db.Model(&models.SeverityRule{}).Where("name LIKE ?", "Windows:%").Count(&n)
+		return n
+	}
+	want := int64(0)
+	for _, r := range WindowsRules() {
+		if len(r.Name) > 8 && r.Name[:8] == "Windows:" {
+			want++
+		}
+	}
+	if count() != want {
+		t.Fatalf("new database has %d Windows rules, want %d", count(), want)
+	}
+	reopen := func() {
+		sqlDB, _ := db.DB()
+		sqlDB.Close()
+		if db, err = Open(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A database from before the Windows rules gets them once, without
+	// duplicating rules that already exist.
+	db.Where("name = ?", "Windows: failed logon (4625)").Delete(&models.SeverityRule{})
+	db.Where("key = ?", "seeded_rules_windows").Delete(&models.Setting{})
+	reopen()
+	if count() != want {
+		t.Fatalf("existing database has %d Windows rules, want %d", count(), want)
+	}
+	db.Where("name LIKE ?", "Windows:%").Delete(&models.SeverityRule{})
+	reopen()
+	defer func() { sqlDB, _ := db.DB(); sqlDB.Close() }()
+	if count() != 0 {
+		t.Error("deleted Windows rules were added again")
+	}
+}

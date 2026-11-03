@@ -17,11 +17,11 @@
         <div class="text-caption text-medium-emphasis">{{ item.description }}</div>
       </template>
       <template #item.type="{ item }">
-        <v-chip size="small" :color="item.type === 'iptables' ? 'deep-purple' : 'teal'" variant="tonal" label>{{ item.type }}</v-chip>
+        <v-chip size="small" :color="typeColors[item.type] || 'teal'" variant="tonal" label>{{ item.type }}</v-chip>
       </template>
       <template #item.app_filter="{ item }"><code v-if="item.app_filter">{{ item.app_filter }}</code><span v-else class="text-medium-emphasis">{{ t('decoders.allApps') }}</span></template>
       <template #item.pattern="{ item }">
-        <div class="msg-cell mono max-w-[420px]" :title="item.pattern">{{ item.pattern || (item.type === 'iptables' ? t('decoders.builtin') : '') }}</div>
+        <div class="msg-cell mono max-w-[420px]" :title="item.pattern">{{ item.pattern || (item.type !== 'regex' ? t('decoders.builtin') : '') }}</div>
       </template>
       <template #item.tags="{ item }"><TagChips :tags="item.tags" /></template>
       <template #item.actions="{ item }">
@@ -50,7 +50,7 @@
           <v-combobox v-model="form.tags" :label="t('decoders.tagsOnMatch')" multiple chips closable-chips class="md:col-span-3" />
           <v-textarea
             v-model="form.pattern"
-            :label="form.type === 'iptables' ? t('decoders.prefilter') : t('decoders.pattern')"
+            :label="form.type !== 'regex' ? t('decoders.prefilter') : t('decoders.pattern')"
             rows="2"
             auto-grow
             class="md:col-span-6 mono"
@@ -105,7 +105,9 @@ const testResults = ref([])
 const types = computed(() => [
   { title: t('decoders.typeRegex'), value: 'regex' },
   { title: t('decoders.typeIptables'), value: 'iptables' },
+  { title: t('decoders.typeBluefwd'), value: 'bluefwd' },
 ])
+const typeColors = { iptables: 'deep-purple', bluefwd: 'indigo' }
 const headers = computed(() => [
   { title: t('common.enabled'), key: 'enabled', width: 70, sortable: false },
   { title: t('common.prio'), key: 'priority', width: 70 },
