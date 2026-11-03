@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BlueFwd</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">⇢</span>
+      <div>
+        <h1>BlueFwd</h1>
+        <div class="sub" id="hostInfo">Windows event → syslog forwarder</div>
+      </div>
+    </div>
+    <div class="conn" id="connPill"><span class="dot"></span><span id="connText">…</span></div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="overview" class="active">Overview</button>
+    <button role="tab" data-tab="config">Configuration</button>
+    <button role="tab" data-tab="events">Live events</button>
+  </nav>
+
+  <main>
+    <!-- Overview -->
+    <section id="tab-overview" class="tab active">
+      <div class="cards">
+        <div class="card">
+          <div class="label">Syslog server</div>
+          <div class="value" id="targetValue">–</div>
+          <div class="meta" id="targetMeta"></div>
+        </div>
+        <div class="card">
+          <div class="label">Throughput</div>
+          <div class="value"><span id="rateValue">0</span> <small>events/s</small></div>
+          <div class="meta" id="sentMeta"></div>
+        </div>
+        <div class="card">
+          <div class="label">Queue</div>
+          <div class="value"><span id="queueValue">0</span> <small id="queueCap"></small></div>
+          <div class="bar"><div id="queueBar"></div></div>
+        </div>
+        <div class="card">
+          <div class="label">Sender errors</div>
+          <div class="value" id="errorsValue">0</div>
+          <div class="meta" id="errorsMeta"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Subscriptions</h2>
+          <span class="muted" id="uptime"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th><th>Channel</th><th>State</th>
+                <th class="num">Received</th><th class="num">Forwarded</th><th class="num">Dropped</th><th class="num">Errors</th>
+                <th>Last event</th><th class="num">Position</th>
+              </tr>
+            </thead>
+            <tbody id="subsBody"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Configuration -->
+    <section id="tab-config" class="tab">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Syslog server</h2>
+          <button class="ghost" id="testBtn" type="button">Send test message</button>
+        </div>
+        <div class="grid" id="syslogForm">
+          <label>Host<input name="host" required></label>
+          <label>Port<input name="port" type="number" min="1" max="65535"></label>
+          <label>Format
+            <select name="format">
+              <option value="Rfc5424">RFC 5424</option>
+              <option value="Rfc3164">RFC 3164 (BSD)</option>
+            </select>
+          </label>
+          <label>TCP framing
+            <select name="framing">
+              <option value="OctetCounting">Octet counting (RFC 6587)</option>
+              <option value="NewLine">Newline delimited</option>
+            </select>
+          </label>
+          <label>Facility
+            <select name="facility"></select>
+          </label>
+          <label>App name<input name="appName"></label>
+          <label>Hostname override<input name="hostname" placeholder="(event computer name)"></label>
+          <label>Reconnect delay (s)<input name="reconnectDelaySeconds" type="number" min="1"></label>
+          <label>Max message size (bytes)<input name="maxMessageBytes" type="number" min="480"></label>
+          <label class="check"><input type="checkbox" name="useTls"> Use TLS</label>
+          <label class="check"><input type="checkbox" name="allowUntrustedCertificate"> Allow untrusted certificate</label>
+          <label class="check"><input type="checkbox" name="includeStructuredData"> Include structured data (RFC 5424)</label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Event subscriptions</h2>
+          <div class="btns">
+            <button class="ghost" type="button" data-preset="sysmon">+ Sysmon</button>
+            <button class="ghost" type="button" data-preset="security">+ Security logons</button>
+            <button class="ghost" type="button" data-preset="powershell">+ PowerShell</button>
+            <button class="ghost" type="button" data-preset="empty">+ Empty</button>
+          </div>
+        </div>
+        <div id="subsEditor"></div>
+        <datalist id="channelList"></datalist>
+      </div>
+
+      <div class="savebar">
+        <div id="saveMsg" class="msg"></div>
+        <button type="button" class="ghost" id="reloadBtn">Discard changes</button>
+        <button type="button" class="primary" id="saveBtn">Save &amp; apply</button>
+      </div>
+    </section>
+
+    <!-- Live events -->
+    <section id="tab-events" class="tab">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Last 100 events</h2>
+          <label class="check inline"><input type="checkbox" id="autoRefresh" checked> Auto refresh</label>
+        </div>
+        <div id="eventsList" class="events"><div class="muted">No events yet.</div></div>
+      </div>
+    </section>
+  </main>
+
+  <template id="subTemplate">
+    <div class="sub-card">
+      <div class="sub-head">
+        <label class="check"><input type="checkbox" data-f="enabled"> Enabled</label>
+        <input class="sub-name" data-f="name" placeholder="Name">
+        <span class="spacer"></span>
+        <button type="button" class="ghost small" data-act="probe">Test channel</button>
+        <button type="button" class="danger small" data-act="remove">Remove</button>
+      </div>
+      <div class="grid">
+        <label class="wide">Channel<input data-f="channel" list="channelList" placeholder="Microsoft-Windows-Sysmon/Operational"></label>
+        <label class="wide">XPath query / QueryList XML<textarea data-f="query" rows="3" spellcheck="false"></textarea></label>
+        <label>Payload
+          <select data-f="payloadFormat">
+            <option value="Json">JSON (system + EventData)</option>
+            <option value="Xml">Raw event XML</option>
+            <option value="Message">Rendered message text</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" data-f="includeRenderedMessage"> Add rendered message to JSON</label>
+        <label class="check"><input type="checkbox" data-f="resumeFromLastPosition"> Resume from last position after restart</label>
+        <label class="check"><input type="checkbox" data-f="readExistingOnFirstStart"> Forward existing events on first start</label>
+      </div>
+      <div class="probe-msg msg"></div>
+    </div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>

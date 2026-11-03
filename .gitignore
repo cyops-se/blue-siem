@@ -9,3 +9,4 @@ backend/blue-siem.exe
 backend/web/dist/*
 !backend/web/dist/index.html
 /*.exe~
+/blue-fwd/*.zip
