@@ -71,11 +71,17 @@ syslog (UDP/TCP) ─▶ parser (RFC3164/5424) ─▶ decoders ─▶ severity ru
    the host that sent the log), class, `src_ip`, `dst_ip`, `src_port`, `dst_port`, `proto` and action. The
    *Flows* view sums the counters. Which fields to group by can be chosen, e.g. without `src_port` so that
    random source ports merge into one flow. Log sources are listed with their number of flows and events,
-   and a click shows only that source's flows. Each flow can produce an iptables rule to copy, which is
-   inserted at the top and gives the flow the same verdict (ACCEPT/DROP/REJECT) before the LOG rule is
-   reached, so it is no longer logged. Fields that vary within the flow are not matched, and the source
-   port is only included on request. The values come from received logs and are strictly validated
-   (IP, port, protocol) before they end up in the command.
+   and a click shows only that source's flows. For grey (and white) flows, iptables rules are suggested
+   for copying; they are inserted at the top of the chain, before the LOG rule for grey traffic. White
+   traffic is never logged; black and grey always are:
+   - *White – allow:* `-j ACCEPT` without logging.
+   - *White – block:* `-j DROP` without logging, for known noise.
+   - *Black:* `-j LOG --log-prefix "BLACK DROP: "` followed by `-j DROP` (positions 1 and 2), so the
+     traffic is classified as BLACK and raises an alarm.
+
+   Black flows get no suggestions, since they must always be logged. Fields that vary within the flow are
+   not matched, and the source port is only included on request. The values come from received logs and
+   are strictly validated (IP, port, protocol) before they end up in the command.
    **Learning mode** (toggle in *Flows* and *Settings*): classified iptables traffic is only counted as
    flows, and no events or alarms are created. The criticality is still computed and shown as “Max crit.”.
    Other messages (ssh, sudo …) are handled as usual. Flows are removed according to the retention time.

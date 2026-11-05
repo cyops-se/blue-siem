@@ -71,10 +71,16 @@ syslog (UDP/TCP) ─▶ parser (RFC3164/5424) ─▶ avkodare ─▶ kritikalite
    värd som skickat loggen), klass, `src_ip`, `dst_ip`, `src_port`, `dst_port`, `proto` och åtgärd. Vyn
    *Flöden* summerar räknarna. Vilka fält som grupperas går att välja, t.ex. utan `src_port` så att slumpade
    källportar slås ihop till ett flöde. Loggkällorna listas med antal flöden och händelser, och ett klick
-   visar bara den källans flöden. Varje flöde kan ge en iptables-regel att kopiera, som sätts in överst
-   och ger flödet samma verdikt (ACCEPT/DROP/REJECT) innan LOG-regeln nås, så att det inte längre loggas.
-   Fält som varierar i flödet matchas inte, och källporten tas bara med om man väljer det. Värdena kommer
-   från mottagna loggar och valideras strikt (IP, port, protokoll) innan de hamnar i kommandot.
+   visar bara den källans flöden. För grå (och vita) flöden föreslås iptables-regler att kopiera, som
+   sätts in överst i kedjan, före LOG-regeln för grå trafik. Vit trafik loggas aldrig, svart och grå alltid:
+   - *Vit – tillåt:* `-j ACCEPT` utan loggning.
+   - *Vit – blockera:* `-j DROP` utan loggning, för känt brus.
+   - *Svart:* `-j LOG --log-prefix "BLACK DROP: "` följt av `-j DROP` (position 1 och 2), så att trafiken
+     klassas som BLACK och larmar.
+
+   Svarta flöden får inga förslag, eftersom de alltid ska loggas. Fält som varierar i flödet matchas inte,
+   och källporten tas bara med om man väljer det. Värdena kommer från mottagna loggar och valideras strikt
+   (IP, port, protokoll) innan de hamnar i kommandot.
    **Inlärningsläge** (växel i *Flöden* och *Inställningar*): klassad iptables-trafik räknas bara som
    flöden, och inga händelser eller larm skapas. Kritikaliteten beräknas ändå och visas som ”Max krit.”.
    Övriga meddelanden (ssh, sudo …) behandlas som vanligt. Flöden rensas enligt lagringstiden.

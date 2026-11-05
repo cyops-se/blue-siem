@@ -40,5 +40,8 @@ export default createVuetify({
     VTextarea: { variant: 'outlined', density: 'comfortable' },
     VSelect: { variant: 'outlined', density: 'comfortable' },
     VCombobox: { variant: 'outlined', density: 'comfortable' },
+    // Tailwind utilities are scoped to #app (tailwind.config.js); dialogs
+    // are otherwise teleported to <body> where they do not apply.
+    VDialog: { attach: '#app' },
   },
 })

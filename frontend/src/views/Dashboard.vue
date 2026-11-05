@@ -138,13 +138,13 @@ const tiles = computed(() => [
   { label: t('dashboard.stored'), value: stats.value.events_total, icon: 'mdi-database-outline', to: '/events' },
 ])
 
+// WHITE traffic is not logged, so only BLACK and GREY are shown.
 const classRows = computed(() => {
   const c = stats.value.classes || {}
-  const total = (c.WHITE || 0) + (c.GREY || 0) + (c.BLACK || 0) || 1
+  const total = (c.GREY || 0) + (c.BLACK || 0) || 1
   return [
     { name: 'BLACK', count: c.BLACK || 0, bar: 'red-darken-1' },
     { name: 'GREY', count: c.GREY || 0, bar: 'grey' },
-    { name: 'WHITE', count: c.WHITE || 0, bar: 'blue-grey-lighten-2' },
   ].map((r) => ({ ...r, pct: (r.count / total) * 100 }))
 })
 

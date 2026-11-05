@@ -35,7 +35,7 @@
 
   <v-dialog v-model="dialog" max-width="980" scrollable>
     <v-card :title="form.id ? t('decoders.editTitle', { name: form.name }) : t('decoders.new')">
-      <v-card-text>
+      <v-card-text class="pt-3">
         <div class="grid gap-x-4 md:grid-cols-6">
           <v-text-field v-model="form.name" :label="t('common.name')" class="md:col-span-3" />
           <v-select v-model="form.type" :items="types" :label="t('common.type')" class="md:col-span-2" />

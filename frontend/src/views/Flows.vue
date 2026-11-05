@@ -144,7 +144,10 @@
         <template #item.last_seen="{ item }"><span class="whitespace-nowrap">{{ fmtTime(item.last_seen) }}</span></template>
         <template #item.open="{ item }">
           <div class="flex">
-            <v-btn icon="mdi-wall-fire" size="small" variant="text" :title="t('flows.ruleBtn')" @click="openRule(item)" />
+            <!-- A disabled button shows no title, so it sits on the wrapper. -->
+            <span :title="canSuggest(item) ? t('flows.ruleBtn') : t('flows.noSuggestBlack')">
+              <v-btn icon="mdi-wall-fire" size="small" variant="text" :disabled="!canSuggest(item)" @click="openRule(item)" />
+            </span>
             <v-btn icon="mdi-format-list-bulleted" size="small" variant="text" :title="t('flows.showEvents')" :to="eventsLink(item)" />
           </div>
         </template>
@@ -166,9 +169,18 @@
             <span v-else class="text-warning">{{ t('flows.manySources', { list: samples(ruleFlow.s_hostname, ruleFlow.n_hostname) }) }}</span>
           </span>
         </div>
+        <v-radio-group v-model="ruleOpts.choice" hide-details class="mb-2">
+          <v-radio v-for="c in choices" :key="c" :value="c">
+            <template #label>
+              <div>
+                <div class="flex items-center gap-2"><TagChips :tags="[c === 'black' ? 'BLACK' : 'WHITE']" />{{ t('flows.choice.' + c) }}</div>
+                <div class="text-caption text-medium-emphasis">{{ t('flows.choice.' + c + '-help') }}</div>
+              </div>
+            </template>
+          </v-radio>
+        </v-radio-group>
         <div class="flex flex-wrap items-center gap-x-4">
           <v-select v-model="ruleOpts.chain" :items="chains" :label="t('flows.chain')" hide-details density="compact" class="w-36 flex-none" />
-          <v-select v-model="ruleOpts.target" :items="targets" :label="t('flows.target')" hide-details density="compact" class="w-36 flex-none" />
           <v-checkbox
             v-model="ruleOpts.srcPort"
             :disabled="!ruleFlow.src_port || ruleFlow.n_src_port > 1"
@@ -212,7 +224,7 @@ import { api, query } from '../api'
 import { debounce, live, notify, onLive, setLearning } from '../live'
 import { classes, fmtTime, hourOptions } from '../util'
 import { fmtNum, t } from '../i18n'
-import { chains, copyText, defaultTarget, flowRule, targets } from '../iptables'
+import { canSuggest, chains, choices, copyText, flowRule } from '../iptables'
 import CritChip from '../components/CritChip.vue'
 import TagChips from '../components/TagChips.vue'
 
@@ -240,7 +252,7 @@ const liveMode = ref(true)
 const confirmClear = ref(false)
 const ruleDialog = ref(false)
 const ruleFlow = ref(null)
-const ruleOpts = reactive({ chain: 'INPUT', target: 'ACCEPT', srcPort: false })
+const ruleOpts = reactive({ chain: 'INPUT', choice: 'white-allow', srcPort: false })
 const rule = computed(() => (ruleFlow.value ? flowRule(ruleFlow.value, ruleOpts) : { command: '', errors: [], warnings: [] }))
 // The log source the rule belongs on, when the flow has a single one.
 const ruleHost = computed(() => {
@@ -336,7 +348,7 @@ function samples(list, n) {
 
 function openRule(flow) {
   ruleFlow.value = flow
-  Object.assign(ruleOpts, { chain: 'INPUT', target: defaultTarget(flow), srcPort: false })
+  Object.assign(ruleOpts, { chain: 'INPUT', choice: 'white-allow', srcPort: false })
   ruleDialog.value = true
 }
 

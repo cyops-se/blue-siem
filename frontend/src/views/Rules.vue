@@ -42,7 +42,7 @@
 
   <v-dialog v-model="dialog" max-width="900" scrollable>
     <v-card :title="form.id ? t('rules.editTitle') : t('rules.new')">
-      <v-card-text>
+      <v-card-text class="pt-3">
         <div class="grid gap-x-4 md:grid-cols-6">
           <v-text-field v-model="form.name" :label="t('common.name')" class="md:col-span-5" />
           <v-text-field v-model.number="form.priority" type="number" :label="t('common.priority')" class="md:col-span-1" />
